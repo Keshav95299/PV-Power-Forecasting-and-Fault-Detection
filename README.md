@@ -160,7 +160,7 @@ Potential future work includes:
 
 **Keshav Sharma**
 
-MSc Project
+EU-Core (M.sc) Project
 
 ---
 
