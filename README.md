@@ -1,169 +1,310 @@
-# Short-Term PV Power Forecasting and Fault Detection Using MATLAB
+# Probabilistic Photovoltaic Power Forecasting and Fault Detection Using Split Conformal Prediction
 
 ## Overview
 
-This project presents an end-to-end MATLAB pipeline for short-term photovoltaic (PV) power forecasting and online fault detection. The system combines machine learning-based forecasting with conformal prediction to quantify prediction uncertainty and uses residual-based methods to detect inverter underperformance and soiling faults.
+This project presents a complete photovoltaic (PV) monitoring framework that combines:
 
-The project was developed as part of an MSc research project on renewable energy analytics and predictive maintenance.
+- 24-hour-ahead PV power forecasting
+- Distribution-free uncertainty quantification using Split Conformal Prediction
+- Automatic fault detection using a sliding-window persistence rule
 
----
+The framework predicts PV power every 15 minutes over a 24-hour forecasting horizon and uses prediction intervals to distinguish normal forecasting uncertainty from abnormal system behaviour.
 
-## Features
+Two common PV fault scenarios are simulated and evaluated:
 
-- Data preprocessing and cleaning
-- Feature engineering using weather and temporal variables
-- Short-term PV power forecasting using LSBoost regression
-- Split conformal prediction for uncertainty quantification
-- Residual analysis and forecasting evaluation
-- Inverter underperformance fault injection
-- Soiling fault simulation
-- Sliding-window fault detection
-- Detection delay vs. false-positive trade-off analysis
+- Inverter underperformance
+- Gradual photovoltaic soiling
+
+This work was completed as part of an MSc dissertation at Robert Gordon University.
 
 ---
 
-## Project Structure
+# Project Workflow
+
+```
+Weather Forecast Data
+          │
+          ▼
+Forecast Dataset Construction
+          │
+          ▼
+24-Hour Ahead Forecasting Model
+          │
+          ▼
+Split Conformal Prediction
+          │
+          ▼
+Prediction Intervals
+          │
+          ▼
+Fault Injection
+          │
+          ▼
+Sliding-Window Fault Detection
+          │
+          ▼
+Fault Alarm
+```
+
+---
+
+# Repository Structure
 
 ```
 project/
 │
-├── src/                      % MATLAB source files
-├── figures/                  % Output figures
-├── data/                     % Input CSV files (not included)
-├── main.m                    % Main execution script
-├── loadData.m
-├── 01_DataCleaning.m
-├── README.md
-└── LICENSE
+├── data/
+│   ├── photovoltaic_measurement_history.csv
+│   ├── weather_station_measurement_history.csv
+│   └── weather_prediction_history.csv
+│
+├── src/
+│   ├── loadData.m
+│   ├── cleanData.m
+│   ├── resampleData.m
+│   ├── decodeForecast.m
+│   ├── buildDayAheadDataset.m
+│   ├── splitData.m
+│   ├── trainForecastModel.m
+│   ├── evaluateForecastModel.m
+│   ├── conformalPrediction.m
+│   ├── prepareMonitoringStream.m
+│   ├── injectInverterFault.m
+│   ├── injectSoilingFault.m
+│   ├── detectFaults.m
+│   ├── detectFaultsCUSUM.m
+│   └── featureEngineering.m
+│
+├── figures/
+│
+├── main.m
+│
+└── README.md
 ```
 
 ---
 
-## Methodology
+# Dataset
 
-The workflow consists of the following stages:
+The framework uses three synchronized datasets.
 
-1. Load and clean photovoltaic and weather datasets.
-2. Merge datasets and engineer predictive features.
-3. Train an LSBoost regression forecasting model.
-4. Evaluate forecasting performance using RMSE and MAE.
-5. Apply Split Conformal Prediction to estimate prediction intervals.
-6. Inject inverter underperformance and soiling faults.
-7. Detect faults using a sliding-window residual monitoring algorithm.
-8. Evaluate detection delay and false-positive performance.
+### Photovoltaic measurements
+
+- Active power
+- Global irradiance
+- Module temperature
+
+### Weather station measurements
+
+- Ambient temperature
+- Humidity
+- Wind speed
+- Solar geometry
+
+### Numerical weather forecasts
+
+- Global irradiance
+- Temperature
+- Cloud cover
+- Humidity
+- Wind speed
+
+All measurements are resampled to a common 15-minute resolution.
 
 ---
 
-## Forecasting Model
+# Forecasting Pipeline
 
-Regression algorithm:
+The forecasting stage constructs a **true day-ahead forecasting dataset**.
 
-- **LSBoost (Least Squares Boosting)**
+Characteristics:
+
+- Forecast horizon: **24 hours**
+- Resolution: **15 minutes**
+- Forecast lead times: **96**
+- Chronological splitting by forecast issue time
 
 Input features include:
 
-- Global irradiance
-- Direct irradiance
-- Diffuse irradiance
-- Temperature
-- Humidity
-- Solar zenith angle
-- Solar azimuth angle
-- Hour of day (cyclic encoding)
-- Day of year (cyclic encoding)
+- Forecast irradiance
+- Forecast temperature
+- Forecast humidity
+- Forecast cloud cover
+- Forecast lead time
+- Cyclic hour encoding
+- Cyclic day-of-year encoding
+
+The forecasting model is trained using MATLAB's **LSBoost regression ensemble**.
 
 ---
 
-## Results
+# Forecasting Performance
 
-The implemented framework successfully demonstrates:
+Testing results
 
-- Accurate short-term PV forecasting
-- Prediction uncertainty estimation using conformal prediction
-- Fast detection of inverter underperformance
-- Detection of gradual soiling degradation
-- Trade-off analysis between detection delay and false alarms
+| Metric | Value |
+|---------|------:|
+| RMSE | 1698.74 W |
+| MAE | 865.80 W |
+| Bias | -478.55 W |
+| Maximum Absolute Error | 8705.26 W |
 
-Example output figures are available in the **figures/** directory.
-
----
-
-## Figures
-
-The repository contains example outputs including:
-
-- Forecasting performance
-- Conformal prediction intervals
-- Residual analysis
-- Inverter underperformance detection
-- Soiling fault detection
-- Detection delay vs. false-positive trade-off
+Although the forecasting model captures the overall daily PV generation profile, forecasting errors increase during rapidly changing weather conditions.
 
 ---
 
-## Dataset
+# Split Conformal Prediction
 
-The raw datasets are **not included** because they exceed GitHub's file size limits.
+Lead-time-conditioned Split Conformal Prediction is applied to quantify forecasting uncertainty.
 
-Place the required CSV files inside the local `data/` directory before running the project.
+Performance
 
-Expected files include:
+| Metric | Value |
+|---------|------:|
+| Nominal Coverage | 90% |
+| Empirical Coverage | 87.95% |
+| Average Interval Width | 3508.09 W |
+| Global Conformal Quantile | 2657.59 W |
 
-- photovoltaic_measurement_history.csv
-- weather_station_measurement_history.csv
-- weather_prediction_history.csv
-- photovoltaic_metadata.csv
-
----
-
-## Requirements
-
-- MATLAB R2023a or later (recommended)
-- Statistics and Machine Learning Toolbox
+Prediction intervals are subsequently used for fault detection.
 
 ---
 
-## Running the Project
+# Fault Simulation
 
-Execute:
+Two synthetic fault scenarios are implemented.
+
+## Inverter Underperformance
+
+- Sudden 20% reduction in PV output
+
+## Gradual Soiling
+
+- Progressive power reduction
+- Final loss = 20%
+
+Faults are injected only into the monitoring dataset while leaving forecasting unchanged.
+
+---
+
+# Sliding-Window Fault Detection
+
+The final monitoring framework detects faults using a persistence-based sliding-window rule.
+
+Detection rule:
+
+An alarm is generated when
+
+Measured Power
+
+falls below
+
+Lower Conformal Prediction Bound
+
+for
+
+**k = 4**
+
+consecutive 15-minute samples.
+
+This corresponds to one hour of persistent abnormal behaviour.
+
+---
+
+# Detection Results
+
+## Inverter Underperformance
+
+| Metric | Value |
+|---------|------:|
+| Detection Delay | 1.25 hours |
+| False Positive Rate | 0.98% |
+
+## Gradual Soiling
+
+| Metric | Value |
+|---------|------:|
+| Detection Delay | 1.25 hours |
+| False Positive Rate | 0.98% |
+
+The detector successfully identifies both simulated fault scenarios while maintaining a low false-positive rate.
+
+---
+
+# Previous CUSUM Implementation
+
+During development, a one-sided CUSUM detector was also implemented and evaluated.
+
+The CUSUM approach successfully detected faults but was ultimately replaced by the sliding-window detector because:
+
+- the project specification explicitly required a persistence rule using **k consecutive lower-bound violations**;
+- the sliding-window detector is simpler to interpret;
+- it directly corresponds to the required anomaly detection methodology.
+
+The CUSUM implementation remains in the repository (`detectFaultsCUSUM.m`) for comparison purposes.
+
+---
+
+# Running the Project
+
+Execute
 
 ```matlab
 main
 ```
 
-The script automatically performs:
+The pipeline performs:
 
-- Data loading
-- Feature engineering
-- Model training
-- Forecast evaluation
-- Conformal prediction
-- Fault injection
-- Fault detection
-- Result visualization
+1. Load datasets
+2. Data cleaning
+3. Resampling
+4. Day-ahead dataset construction
+5. Forecast model training
+6. Forecast evaluation
+7. Split Conformal Prediction
+8. Monitoring stream preparation
+9. Fault injection
+10. Sliding-window fault detection
+11. Performance evaluation
 
 ---
 
-## Future Improvements
+# MATLAB Version
 
-Potential future work includes:
+Tested using
 
-- LightGBM/XGBoost forecasting models
+- MATLAB R2024a
+
+Required toolboxes
+
+- Statistics and Machine Learning Toolbox
+
+---
+
+# Future Improvements
+
+Possible future work includes:
+
+- Deep learning forecasting models (LSTM, Transformer)
 - Adaptive conformal prediction
-- Real-time streaming implementation
-- Multiple fault classification
-- Deep learning forecasting models
+- Multi-fault classification
+- Real-world fault datasets
+- Online model updating
 
 ---
 
-## Author
+# Author
 
 **Keshav Sharma**
 
-EU-Core (M.sc) Project
+MSc (Eu-Core)
+
 
 ---
 
-## License
+# License
 
-This project is released under the MIT License.
+This repository is provided for academic and research purposes.
+
+---
+
