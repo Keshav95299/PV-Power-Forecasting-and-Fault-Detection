@@ -1,18 +1,141 @@
 function [trainData, calibData, testData] = splitData(dataset)
+%SPLITDATA Chronologically split the day-ahead dataset.
+%
+% The split is performed by forecast origin time, not by individual rows.
+% This avoids leakage between the 96 lead steps belonging to the same
+% forecast issue time.
+%
+% Output proportions:
+%   70% training
+%   15% calibration
+%   15% testing
 
-    disp("Splitting dataset...");
+    disp("Splitting day-ahead dataset...");
 
-    n = height(dataset);
+    requiredVariables = { ...
+        'forecast_origin_time', ...
+        'target_timestamp', ...
+        'target_power'};
 
-    trainEnd = floor(0.70*n);
-    calibEnd = floor(0.85*n);
+    missingVariables = setdiff( ...
+        requiredVariables, ...
+        dataset.Properties.VariableNames);
 
-    trainData = dataset(1:trainEnd,:);
-    calibData = dataset(trainEnd+1:calibEnd,:);
-    testData  = dataset(calibEnd+1:end,:);
+    if ~isempty(missingVariables)
+        error( ...
+            "Dataset is missing required variables: %s", ...
+            strjoin(missingVariables, ", "));
+    end
 
-    fprintf('Training samples: %d\n',height(trainData));
-    fprintf('Calibration samples: %d\n',height(calibData));
-    fprintf('Testing samples: %d\n',height(testData));
+    %% Sort chronologically
+
+    dataset = sortrows( ...
+        dataset, ...
+        {'forecast_origin_time', 'lead_step'});
+
+    %% Identify unique forecast issue times
+
+    uniqueOrigins = unique( ...
+        dataset.forecast_origin_time, ...
+        'sorted');
+
+    nOrigins = length(uniqueOrigins);
+
+    if nOrigins < 10
+        error("Not enough unique forecast origins for a reliable split.");
+    end
+
+    %% Calculate chronological boundaries
+
+    nTrainOrigins = floor(0.70 * nOrigins);
+    nCalibOrigins = floor(0.15 * nOrigins);
+
+    nTestOrigins = nOrigins - ...
+        nTrainOrigins - nCalibOrigins;
+
+    if nTrainOrigins < 1 || ...
+       nCalibOrigins < 1 || ...
+       nTestOrigins < 1
+
+        error("One or more dataset splits would be empty.");
+    end
+
+    trainOrigins = uniqueOrigins(1:nTrainOrigins);
+
+    calibOrigins = uniqueOrigins( ...
+        nTrainOrigins + 1 : ...
+        nTrainOrigins + nCalibOrigins);
+
+    testOrigins = uniqueOrigins( ...
+        nTrainOrigins + nCalibOrigins + 1 : end);
+
+    %% Select all 96 lead rows belonging to each forecast origin
+
+    trainMask = ismember( ...
+        dataset.forecast_origin_time, ...
+        trainOrigins);
+
+    calibMask = ismember( ...
+        dataset.forecast_origin_time, ...
+        calibOrigins);
+
+    testMask = ismember( ...
+        dataset.forecast_origin_time, ...
+        testOrigins);
+
+    trainData = dataset(trainMask, :);
+    calibData = dataset(calibMask, :);
+    testData = dataset(testMask, :);
+
+    %% Final chronological sorting
+
+    trainData = sortrows( ...
+        trainData, ...
+        {'forecast_origin_time', 'lead_step'});
+
+    calibData = sortrows( ...
+        calibData, ...
+        {'forecast_origin_time', 'lead_step'});
+
+    testData = sortrows( ...
+        testData, ...
+        {'forecast_origin_time', 'lead_step'});
+
+    %% Display split information
+
+    fprintf("Unique forecast origins: %d\n", nOrigins);
+
+    fprintf("Training origins: %d\n", ...
+        length(trainOrigins));
+
+    fprintf("Calibration origins: %d\n", ...
+        length(calibOrigins));
+
+    fprintf("Testing origins: %d\n", ...
+        length(testOrigins));
+
+    fprintf("Training samples: %d\n", ...
+        height(trainData));
+
+    fprintf("Calibration samples: %d\n", ...
+        height(calibData));
+
+    fprintf("Testing samples: %d\n", ...
+        height(testData));
+
+    fprintf( ...
+        "Training period: %s to %s\n", ...
+        string(min(trainData.forecast_origin_time)), ...
+        string(max(trainData.forecast_origin_time)));
+
+    fprintf( ...
+        "Calibration period: %s to %s\n", ...
+        string(min(calibData.forecast_origin_time)), ...
+        string(max(calibData.forecast_origin_time)));
+
+    fprintf( ...
+        "Testing period: %s to %s\n", ...
+        string(min(testData.forecast_origin_time)), ...
+        string(max(testData.forecast_origin_time)));
 
 end

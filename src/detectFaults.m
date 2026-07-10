@@ -1,98 +1,408 @@
-function detectionResults = detectFaults(inputResults, plotTitle)
+function detectionResults = detectFaults( ...
+    faultResults, k, faultName, outputFile)
+%DETECTFAULTS Sliding-window lower-bound fault detector.
+%
+% A violation occurs when the faulty measured PV power falls below the
+% conformal lower prediction bound during active daytime operation.
+%
+% An alarm is generated when k consecutive violations occur.
+% For 15-minute data, k = 4 represents one hour of persistent abnormal
+% operation.
+%
+% Inputs
+% ------
+% faultResults : Output from injectInverterFault.m or injectSoilingFault.m
+% k            : Number of consecutive violations required
+% faultName    : Text used in the figure title
+% outputFile   : Optional path for saving the generated figure
+%
+% Output
+% -------
+% detectionResults : Table containing detector outputs and metrics
 
-disp("Running sliding-window fault detector...");
+    %% Default arguments
 
-k = 4;   % 4 consecutive violations = 1 hour at 15-min resolution
+    if nargin < 2 || isempty(k)
+        k = 4;
+    end
 
-n = height(inputResults);
-detected = false(n,1);
-count = 0;
+    if nargin < 3 || strlength(string(faultName)) == 0
+        faultName = "PV Fault";
+    end
 
-for i = 1:n
+    if nargin < 4
+        outputFile = "";
+    end
 
-    if inputResults.actual_faulty(i) < inputResults.lower(i)
-        count = count + 1;
+    faultName = string(faultName);
+    outputFile = string(outputFile);
+
+    disp("Running sliding-window fault detector...");
+    fprintf("Fault scenario: %s\n", faultName);
+
+    %% Validate input variables
+
+    requiredVariables = { ...
+        'target_timestamp', ...
+        'actual_faulty', ...
+        'predicted', ...
+        'lower', ...
+        'upper', ...
+        'isFault'};
+
+    missingVariables = setdiff( ...
+        requiredVariables, ...
+        faultResults.Properties.VariableNames);
+
+    if ~isempty(missingVariables)
+        error( ...
+            "faultResults is missing required variables: %s", ...
+            strjoin(missingVariables, ", "));
+    end
+
+    if k < 1 || mod(k,1) ~= 0
+        error("k must be a positive integer.");
+    end
+
+    %% Sort monitoring results chronologically
+
+    detectionResults = sortrows( ...
+        faultResults, ...
+        'target_timestamp');
+
+    n = height(detectionResults);
+
+    if n == 0
+        error("faultResults is empty.");
+    end
+
+    %% Detector configuration
+
+    % This is used as a daytime-operation proxy because solar elevation
+    % is not present in the final monitoring table.
+    minimumPredictedPower = 500;  % W
+
+    % A larger time gap breaks the consecutive sequence.
+    maximumGapMinutes = 30;
+
+    %% Identify active daytime operation
+
+    activeOperation = ...
+        detectionResults.predicted >= minimumPredictedPower;
+
+    %% Detect lower conformal-bound violations
+
+    violation = ...
+        activeOperation & ...
+        detectionResults.actual_faulty < detectionResults.lower;
+
+    %% Apply k-consecutive sliding-window rule
+
+    consecutiveCount = zeros(n,1);
+    alarmEvent = false(n,1);
+
+    currentCount = 0;
+
+    for i = 1:n
+
+        % Reset the sequence across missing-data gaps.
+        if i > 1
+
+            gapMinutes = minutes( ...
+                detectionResults.target_timestamp(i) - ...
+                detectionResults.target_timestamp(i-1));
+
+            if gapMinutes > maximumGapMinutes
+                currentCount = 0;
+            end
+        end
+
+        % Continue counting only during active operation and while the
+        % measurement remains below the lower conformal bound.
+        if violation(i)
+
+            currentCount = currentCount + 1;
+
+        else
+
+            currentCount = 0;
+        end
+
+        consecutiveCount(i) = currentCount;
+
+        % Generate one alarm when the run first reaches k samples.
+        if currentCount == k
+            alarmEvent(i) = true;
+        end
+    end
+
+    %% Locate the injected fault
+
+    faultStartIndex = find( ...
+        detectionResults.isFault, ...
+        1, ...
+        'first');
+
+    if isempty(faultStartIndex)
+        error("No ground-truth fault label was found.");
+    end
+
+    faultStartTime = ...
+        detectionResults.target_timestamp(faultStartIndex);
+
+    %% Locate the first post-fault alarm
+
+    detectionIndex = find( ...
+        alarmEvent & detectionResults.isFault, ...
+        1, ...
+        'first');
+
+    if isempty(detectionIndex)
+
+        detectionTime = NaT;
+        detectionDelaySteps = NaN;
+        detectionDelaySamples = NaN;
+        detectionDelayHours = NaN;
+        detectedAfterFault = false;
+
+        warning("%s was not detected.", faultName);
+
     else
-        count = 0;
+
+        detectionTime = ...
+            detectionResults.target_timestamp(detectionIndex);
+
+        % Number of elapsed 15-minute intervals.
+        detectionDelaySteps = ...
+            detectionIndex - faultStartIndex;
+
+        % Number of samples from the fault-start sample through alarm.
+        detectionDelaySamples = ...
+            detectionIndex - faultStartIndex + 1;
+
+        % Actual elapsed time, robust to timestamp gaps.
+        detectionDelayHours = hours( ...
+            detectionTime - faultStartTime);
+
+        detectedAfterFault = true;
     end
 
-    if count == k
-        detected(i) = true;
+    %% Calculate false-positive rate on clean daytime samples
+
+    cleanDaytimeMask = ...
+        ~detectionResults.isFault & ...
+        activeOperation;
+
+    falsePositiveMask = ...
+        alarmEvent & ...
+        cleanDaytimeMask;
+
+    falsePositiveCount = sum(falsePositiveMask);
+    cleanDaytimeSamples = sum(cleanDaytimeMask);
+
+    if cleanDaytimeSamples > 0
+
+        falsePositiveRate = ...
+            100 * falsePositiveCount / cleanDaytimeSamples;
+
+    else
+
+        falsePositiveRate = NaN;
     end
 
-end
+    %% Add detector results to table
 
-detectionResults = inputResults;
-detectionResults.detected = detected;
+    detectionResults.active_operation = activeOperation;
+    detectionResults.violation = violation;
+    detectionResults.consecutive_count = consecutiveCount;
+    detectionResults.alarm_event = alarmEvent;
+    detectionResults.detected = alarmEvent;
+    detectionResults.false_positive = falsePositiveMask;
 
-faultStart = find(detectionResults.isFault,1);
+    %% Print summary
 
-firstDetection = find(detectionResults.detected & ((1:n)' >= faultStart),1);
+    fprintf("\n");
+    fprintf("Sliding-window detector results\n");
+    fprintf("----------------------------------------\n");
+    fprintf("Fault scenario: %s\n", faultName);
+    fprintf("Sliding-window parameter k = %d\n", k);
+    fprintf("Persistence represented by k = %.2f hours\n", ...
+        k * 0.25);
+    fprintf("Fault start time = %s\n", string(faultStartTime));
 
-if isempty(firstDetection)
-    fprintf('No fault detected.\n');
-    delay = NaN;
-else
-    delay = firstDetection - faultStart;
-    fprintf('Detection delay = %d samples\n',delay);
-    fprintf('Detection delay = %.2f hours\n',delay*15/60);
-end
+    if detectedAfterFault
 
-falsePositives = sum(detectionResults.detected & ~detectionResults.isFault);
-fprintf('False positives = %d\n',falsePositives);
+        fprintf("Detection time = %s\n", string(detectionTime));
+        fprintf("Elapsed detection steps = %.0f\n", ...
+            detectionDelaySteps);
+        fprintf("Samples from fault start to alarm = %.0f\n", ...
+            detectionDelaySamples);
+        fprintf("Detection delay = %.2f hours\n", ...
+            detectionDelayHours);
 
-% Plot around fault start and detection
-if ~isempty(firstDetection)
-    startPlot = max(1, faultStart - 50);
-    endPlot   = min(n, firstDetection + 100);
-else
-    startPlot = max(1, faultStart - 50);
-    endPlot   = min(n, faultStart + 500);
-end
+    else
 
-figure;
-hold on;
+        fprintf("Detection result = not detected\n");
+    end
 
-h = [];
-labels = {};
+    fprintf("Clean daytime samples = %d\n", ...
+        cleanDaytimeSamples);
 
-h(end+1) = plot(startPlot:endPlot, ...
-    detectionResults.actual_faulty(startPlot:endPlot), ...
-    'b','LineWidth',1.5);
-labels{end+1} = 'Faulty Power';
+    fprintf("False-positive alarms = %d\n", ...
+        falsePositiveCount);
 
-h(end+1) = plot(startPlot:endPlot, ...
-    detectionResults.lower(startPlot:endPlot), ...
-    'k--','LineWidth',1);
-labels{end+1} = 'Lower Bound';
+    fprintf("False-positive rate = %.4f %%\n", ...
+        falsePositiveRate);
 
-h(end+1) = plot(startPlot:endPlot, ...
-    detectionResults.upper(startPlot:endPlot), ...
-    'k--','LineWidth',1);
-labels{end+1} = 'Upper Bound';
+    fprintf("Total lower-bound violations = %d\n", ...
+        sum(violation));
 
-detIdx = find(detectionResults.detected);
-detIdx = detIdx(detIdx >= startPlot & detIdx <= endPlot);
+    fprintf("Total alarm events = %d\n", ...
+        sum(alarmEvent));
 
-if ~isempty(detIdx)
-    h(end+1) = plot(detIdx, ...
-        detectionResults.actual_faulty(detIdx), ...
-        'ro','MarkerSize',7,'LineWidth',1.5);
-    labels{end+1} = 'Detected';
-end
+    %% Plot around the injected fault
 
-h(end+1) = xline(faultStart,'m--','LineWidth',2);
-labels{end+1} = 'Fault Start';
+    plotStartTime = faultStartTime - days(2);
+    plotEndTime = faultStartTime + days(10);
 
-if ~isempty(firstDetection)
-    h(end+1) = xline(firstDetection,'g--','LineWidth',2);
-    labels{end+1} = 'Detection';
-end
+    plotMask = ...
+        detectionResults.target_timestamp >= plotStartTime & ...
+        detectionResults.target_timestamp <= plotEndTime;
 
-xlabel('Sample');
-ylabel('Power (W)');
-title(plotTitle);
-legend(h, labels, 'Location','northwest');
-grid on;
+    plotResults = detectionResults(plotMask,:);
+
+    figureHandle = figure( ...
+        'Name', ...
+        sprintf('%s Sliding-Window Detection', faultName), ...
+        'NumberTitle', ...
+        'off');
+
+    hold on;
+
+    plot( ...
+        plotResults.target_timestamp, ...
+        plotResults.actual_faulty, ...
+        'b', ...
+        'LineWidth', 1.4);
+
+    plot( ...
+        plotResults.target_timestamp, ...
+        plotResults.predicted, ...
+        'r', ...
+        'LineWidth', 1.2);
+
+    plot( ...
+        plotResults.target_timestamp, ...
+        plotResults.lower, ...
+        'k--', ...
+        'LineWidth', 1.1);
+
+    faultLine = xline( ...
+        faultStartTime, ...
+        'm--', ...
+        'Fault start', ...
+        'LineWidth', 1.5);
+
+    faultLine.LabelVerticalAlignment = 'middle';
+
+    if detectedAfterFault
+
+        detectionLine = xline( ...
+            detectionTime, ...
+            'g--', ...
+            'Detection', ...
+            'LineWidth', 1.5);
+
+        detectionLine.LabelVerticalAlignment = 'bottom';
+    end
+
+    alarmMask = plotResults.alarm_event;
+
+    scatter( ...
+        plotResults.target_timestamp(alarmMask), ...
+        plotResults.actual_faulty(alarmMask), ...
+        45, ...
+        'ro', ...
+        'LineWidth', 1.4);
+
+    xlabel('Time');
+    ylabel('PV Power (W)');
+
+    title(sprintf( ...
+        '%s Detection Using Sliding Window, k = %d', ...
+        faultName, ...
+        k));
+
+    if detectedAfterFault
+
+        legend( ...
+            'Faulty measured power', ...
+            'Forecast', ...
+            'Conformal lower bound', ...
+            'Fault start', ...
+            'Detection', ...
+            'Alarm event', ...
+            'Location', ...
+            'best');
+
+    else
+
+        legend( ...
+            'Faulty measured power', ...
+            'Forecast', ...
+            'Conformal lower bound', ...
+            'Fault start', ...
+            'Alarm event', ...
+            'Location', ...
+            'best');
+    end
+
+    grid on;
+    hold off;
+
+    %% Save the figure when a filename is supplied
+
+    if strlength(outputFile) > 0
+
+        outputFolder = fileparts(outputFile);
+
+        if strlength(outputFolder) > 0 && ~isfolder(outputFolder)
+            mkdir(outputFolder);
+        end
+
+        exportgraphics( ...
+            figureHandle, ...
+            outputFile, ...
+            'Resolution', ...
+            300);
+
+        fprintf("Figure saved to: %s\n", outputFile);
+    end
+
+    %% Store summary metadata
+
+    detectionResults.Properties.UserData = struct( ...
+        'Detector', 'Sliding-window lower-bound detector', ...
+        'FaultName', faultName, ...
+        'K', k, ...
+        'PersistenceHours', k * 0.25, ...
+        'MinimumPredictedPower', minimumPredictedPower, ...
+        'MaximumGapMinutes', maximumGapMinutes, ...
+        'FaultStartIndex', faultStartIndex, ...
+        'FaultStartTime', faultStartTime, ...
+        'DetectionIndex', detectionIndex, ...
+        'DetectionTime', detectionTime, ...
+        'DetectionDelaySteps', detectionDelaySteps, ...
+        'DetectionDelaySamples', detectionDelaySamples, ...
+        'DetectionDelayHours', detectionDelayHours, ...
+        'DetectedAfterFault', detectedAfterFault, ...
+        'CleanDaytimeSamples', cleanDaytimeSamples, ...
+        'FalsePositiveCount', falsePositiveCount, ...
+        'FalsePositiveRate', falsePositiveRate, ...
+        'TotalViolations', sum(violation), ...
+        'TotalAlarmEvents', sum(alarmEvent), ...
+        'OutputFile', outputFile);
+
+    disp("Sliding-window fault detection complete.");
 
 end
