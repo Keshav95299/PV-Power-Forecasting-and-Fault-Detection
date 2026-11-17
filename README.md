@@ -15,7 +15,7 @@ Two common PV fault scenarios are simulated and evaluated:
 - Inverter underperformance
 - Gradual photovoltaic soiling
 
-This work was completed as part of an MSc dissertation at Robert Gordon University.
+
 
 ---
 
